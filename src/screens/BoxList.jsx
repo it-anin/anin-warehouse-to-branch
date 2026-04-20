@@ -1,0 +1,165 @@
+import { useState } from 'react';
+import Annotation from '../components/Annotation.jsx';
+
+const statusLabel = {
+  open:     { label: 'เปิด',           cls: 'chip' },
+  packing:  { label: 'กำลังแพ็ค',       cls: 'chip warn' },
+  closed:   { label: 'ปิดลังแล้ว',      cls: 'chip ok' },
+  exported: { label: 'ส่ง POS แล้ว',   cls: 'chip' },
+  received: { label: 'รับที่สาขาแล้ว', cls: 'chip ok' },
+};
+
+function BoxTable({ boxes, onOpen, onPrint }) {
+  if (boxes.length === 0) return (
+    <div style={{ padding: '20px 0', fontFamily: 'Patrick Hand', color: 'var(--mute)', textAlign: 'center' }}>
+      ไม่มีข้อมูลลัง
+    </div>
+  );
+  return (
+    <table className="tbl">
+      <thead>
+        <tr>
+          <th>Box ID</th><th>สถานะ</th><th>พนักงาน</th><th>SKU</th><th>ชิ้น</th>
+          <th>POS Number</th><th>อัปเดต</th>
+          {onOpen && <th></th>}
+        </tr>
+      </thead>
+      <tbody>
+        {boxes.map((b) => (
+          <tr key={b.id}>
+            <td className="num-col">{b.id}</td>
+            <td><span className={statusLabel[b.status]?.cls || 'chip'}>● {statusLabel[b.status]?.label || b.status}</span></td>
+            <td style={{ fontFamily: 'Patrick Hand', fontSize: 14 }}>{b.packer?.name || '—'}</td>
+            <td>{b.skuCount}</td>
+            <td>{b.totalQty}</td>
+            <td className="num-col">{b.pos}</td>
+            <td style={{ color: 'var(--mute)' }}>{b.updated}</td>
+            {onOpen && (
+              <td style={{ textAlign: 'right' }}>
+                <button className="btn sm" onClick={() => onOpen(b.id)}>เปิด</button>
+                {b.status === 'closed' && (
+                  <button className="btn sm" style={{ marginLeft: 4 }} onClick={() => onPrint(b.id)}>🖨</button>
+                )}
+              </td>
+            )}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function HistoryEntry({ entry, generateCSV, triggerDownload }) {
+  const [open, setOpen] = useState(false);
+  const total = entry.boxes.length;
+  const exported = entry.boxes.filter(b => b.status === 'exported' || b.status === 'received').length;
+
+  function handleExport() {
+    const csv = generateCSV(entry.boxes);
+    triggerDownload(csv, `history-${entry.dateKey}.csv`, 'text/csv');
+  }
+
+  return (
+    <div style={{ border: '1.5px solid var(--line)', borderRadius: 10, overflow: 'hidden', marginBottom: 8 }}>
+      <div
+        className="row"
+        style={{
+          padding: '10px 14px', background: 'var(--paper-dark)',
+          cursor: 'pointer', userSelect: 'none', gap: 10,
+        }}
+        onClick={() => setOpen(p => !p)}
+      >
+        <span style={{ fontFamily: 'Caveat', fontSize: 20, fontWeight: 700 }}>
+          {open ? '▾' : '▸'} {entry.label}
+        </span>
+        <span className="chip">{total} ลัง</span>
+        <span className="chip ok">{exported} ส่ง/รับแล้ว</span>
+        <span className="mono" style={{ fontSize: 11, color: 'var(--mute)' }}>
+          ล้างเมื่อ {new Date(entry.clearedAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+        </span>
+        <div className="spacer" />
+        <button
+          className="btn sm ghost"
+          onClick={(e) => { e.stopPropagation(); handleExport(); }}
+        >⇩ CSV</button>
+      </div>
+      {open && (
+        <div style={{ padding: '0 0 8px' }}>
+          <BoxTable boxes={entry.boxes} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function BoxList({ boxes, setTab, setActiveBoxId, showToast, createNewBox, generateCSV, triggerDownload, history, clearBoxes }) {
+  function handleExport() {
+    const csv = generateCSV(boxes);
+    triggerDownload(csv, `export-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv');
+  }
+
+  return (
+    <div className="frame" style={{ padding: 0, minHeight: 520, position: 'relative' }}>
+      <div className="coffee-stain" style={{ top: 30, right: 60 }} />
+      <div className="frame-header">
+        <div className="row">
+          <span className="title">📦 รายการลังวันนี้</span>
+          <span className="mono" style={{ color: 'var(--mute)', marginLeft: 12 }}>WH-01 · ผู้ใช้: ต้น</span>
+        </div>
+        <div className="row">
+          <input className="input" placeholder="ค้นหา BX / POS / SKU…" style={{ width: 220 }} />
+        </div>
+      </div>
+
+      <div style={{ padding: 16 }}>
+        {/* summary + actions */}
+        <div className="row" style={{ marginBottom: 12, gap: 8 }}>
+          <span className="chip">ทั้งหมด · {boxes.length}</span>
+          <span className="chip warn">กำลังแพ็ค · {boxes.filter(b => b.status === 'packing').length}</span>
+          <span className="chip ok">ปิดลัง · {boxes.filter(b => b.status === 'closed').length}</span>
+          <span className="chip">ส่ง POS · {boxes.filter(b => b.status === 'exported').length}</span>
+          <div className="spacer" />
+          <button className="btn sm ghost" onClick={() => showToast('รีเฟรชแล้ว')}>⟲ รีเฟรช</button>
+          <button className="btn sm" onClick={handleExport}>⇩ Export ทั้งวัน</button>
+          <button
+            className="btn sm"
+            style={{ borderColor: 'var(--red)', color: 'var(--red)' }}
+            onClick={clearBoxes}
+          >
+            ⊘ Clear · เริ่มวันถัดไป
+          </button>
+        </div>
+
+        {/* today's box table */}
+        <BoxTable
+          boxes={boxes}
+          onOpen={(id) => { setActiveBoxId(id); setTab('scan'); }}
+          onPrint={(id) => { setActiveBoxId(id); setTab('closed'); }}
+        />
+
+        {/* history section */}
+        {history.length > 0 && (
+          <div style={{ marginTop: 32 }}>
+            <div style={{
+              fontFamily: 'Caveat', fontSize: 20, fontWeight: 700,
+              borderBottom: '2px dashed var(--line)', paddingBottom: 8, marginBottom: 14,
+              color: 'var(--mute)',
+            }}>
+              ประวัติย้อนหลัง ({history.length} วัน · เก็บไว้ 1 เดือน)
+            </div>
+            {history.map((entry, i) => (
+              <HistoryEntry
+                key={i}
+                entry={entry}
+                generateCSV={generateCSV}
+                triggerDownload={triggerDownload}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Annotation text="คลิกลัง → ไปหน้าสแกน" style={{ top: 180, right: 20 }} arrow="br" />
+    </div>
+  );
+}
