@@ -1,29 +1,57 @@
 import { useRef } from 'react';
+import * as XLSX from 'xlsx';
 
 const TEMPLATE_CSV = [
-  'sku,barcode,name,unit,qty',
-  'SKU-8801-A,8851234567012,น้ำปลา ตราเด็กสมบูรณ์ 700ml,ขวด,1',
-  'SKU-8802-B,8851234567029,ซอสปรุงรส แม็กกี้ 200ml,ขวด,2',
-  'SKU-4410-C,8859900112233,ข้าวหอมมะลิ มาบุญครอง 1kg,ถุง,1',
+  'ColA,ColB,ColC,ColD,ColE,ColF,ColG',
+  ',(sku),(barcode),(ชื่อสินค้า),(หน่วย),(จำนวน),(location)',
+  ',SKU-8801-A,8851234567012,น้ำปลา ตราเด็กสมบูรณ์ 700ml,ขวด,1,A-01-02',
+  ',SKU-8802-B,8851234567029,ซอสปรุงรส แม็กกี้ 200ml,ขวด,2,B-03-01',
+  ',SKU-4410-C,8859900112233,ข้าวหอมมะลิ มาบุญครอง 1kg,ถุง,1,A-02-05',
 ].join('\n');
+
+function rowsToItems(rows) {
+  return rows
+    .slice(1)
+    .map(vals => ({
+      sku:      String(vals[1] ?? '').trim(),
+      barcode:  String(vals[2] ?? '').trim(),
+      name:     String(vals[3] ?? '').trim(),
+      unit:     String(vals[4] ?? '').trim(),
+      qty:      Math.max(1, parseInt(vals[5], 10) || 1),
+      location: String(vals[6] ?? '').trim(),
+    }))
+    .filter(item => item.sku && item.name);
+}
+
+function splitCSVLine(line) {
+  const result = [];
+  let cur = '', inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQuote = !inQuote;
+    } else if (ch === ',' && !inQuote) {
+      result.push(cur.trim()); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
 
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-  return lines.slice(1)
-    .map(line => {
-      const vals = line.split(',').map(v => v.trim());
-      const obj = Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? '']));
-      return {
-        sku:     obj.sku     || '',
-        barcode: obj.barcode || '',
-        name:    obj.name    || '',
-        unit:    obj.unit    || '',
-        qty:     Math.max(1, parseInt(obj.qty, 10) || 1),
-      };
-    })
-    .filter(item => item.sku && item.name);
+  return rowsToItems(lines.map(splitCSVLine));
+}
+
+function parseXLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  return rowsToItems(rows);
 }
 
 export default function ImportCatalog({ catalog, onImport }) {
@@ -32,16 +60,24 @@ export default function ImportCatalog({ catalog, onImport }) {
   function handleFile(e) {
     const file = e.target.files[0];
     if (!file) return;
+    const isXLSX = /\.xlsx?$/i.test(file.name);
     const reader = new FileReader();
+
     reader.onload = (ev) => {
-      const items = parseCSV(ev.target.result);
+      const items = isXLSX
+        ? parseXLSX(ev.target.result)
+        : parseCSV(ev.target.result);
+
       if (items.length === 0) {
-        alert('ไม่พบรายการสินค้าในไฟล์ กรุณาตรวจสอบรูปแบบ CSV');
+        alert('ไม่พบรายการสินค้าในไฟล์ กรุณาตรวจสอบรูปแบบ');
         return;
       }
       onImport(items);
     };
-    reader.readAsText(file, 'utf-8');
+
+    if (isXLSX) reader.readAsArrayBuffer(file);
+    else reader.readAsText(file, 'utf-8');
+
     e.target.value = '';
   }
 
@@ -61,12 +97,9 @@ export default function ImportCatalog({ catalog, onImport }) {
           📋 รายการเบิก: {catalog.length} รายการ
         </span>
       )}
-      <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleFile} />
+      <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleFile} />
       <button className="btn sm primary" onClick={() => fileRef.current?.click()}>
-        ⇑ นำเข้ารายการเบิกสินค้า (.csv)
-      </button>
-      <button className="btn sm ghost" onClick={downloadTemplate} title="ดาวน์โหลด template CSV">
-        ⇩ Template
+        ⇑ นำเข้ารายการเบิกสินค้า (.csv / .xlsx)
       </button>
     </div>
   );

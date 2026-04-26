@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { matchBarcode } from '../data.js';
 
 const statusLabel = {
   open:     'เปิด',
@@ -140,7 +141,7 @@ export default function BranchReceive({ boxes, setBoxes, itemsByBox, showToast, 
     if (!val) return;
     setItemScan('');
 
-    const match = boxItems.find(l => l.barcode === val || l.sku === val);
+    const match = boxItems.find(l => matchBarcode(l, val));
     if (!match) {
       setScanError(`ไม่พบ "${val}" ในลังนี้`);
       setLastScannedSku(null);

@@ -26,6 +26,12 @@ export function generatePOS(boxId) {
   return boxId.replace(/\D/g, '').padEnd(14, '0').slice(0, 14);
 }
 
+export function matchBarcode(item, val) {
+  if (!val) return false;
+  if (item.sku === val) return true;
+  return item.barcode.split(',').map(b => b.trim()).includes(val);
+}
+
 export const checklist = [
   { sku: 'SKU-8801-A', name: 'น้ำปลา ตราเด็กสมบูรณ์ 700ml', unit: 'ขวด', need: 1, got: 1 },
   { sku: 'SKU-8802-B', name: 'ซอสปรุงรส แม็กกี้ 200ml',       unit: 'ขวด', need: 2, got: 2 },

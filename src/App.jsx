@@ -1,27 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from 'firebase/firestore';
+import { db } from './firebase.js';
 
 import BoxList from './screens/BoxList.jsx';
-import PackScanA from './screens/PackScanA.jsx';
-import PackScanB from './screens/PackScanB.jsx';
 import PackScanC from './screens/PackScanC.jsx';
 import BoxClosedLabel from './screens/BoxClosedLabel.jsx';
-import ExportPOS from './screens/ExportPOS.jsx';
 import LookupByBoxBarcode from './screens/LookupByBoxBarcode.jsx';
 import BranchReceive from './screens/BranchReceive.jsx';
-import FlowDiagram from './screens/FlowDiagram.jsx';
+import PackerDashboard from './screens/PackerDashboard.jsx';
 import TweaksPanel from './components/TweaksPanel.jsx';
 import Toast from './components/Toast.jsx';
-import { boxes as initialBoxes, sampleLine } from './data.js';
 import ImportCatalog from './components/ImportCatalog.jsx';
+import ImportBarcodeMap from './components/ImportBarcodeMap.jsx';
 
 const TABS = [
-  { k: 'all',    label: 'Dashboard' },
-  { k: 'flow',   label: 'Flow' },
+  { k: 'flow',   label: 'Dashboard' },
   { k: 'list',   label: 'รายการเบิกสินค้า' },
   { k: 'scan',   label: 'แพ็คกิ้ง' },
-  { k: 'closed', label: 'Closed Box + Label' },
-  { k: 'lookup', label: 'Lookup by Box Barcode' },
-  { k: 'export', label: 'Export POS' },
+  { k: 'closed', label: 'Box & Label' },
   { k: 'receive', label: '📥 รับสินค้า (สาขา)' },
 ];
 
@@ -37,25 +33,30 @@ const ACCENTS = { orange: '#e8692b', blue: '#2b6ce8', green: '#5c8a3a', pink: '#
 const ACCENT_SOFT = { orange: '#f5c9a8', blue: '#b8cef5', green: '#c4d8a8', pink: '#f5c2db' };
 
 export default function App() {
-  const [tab, setTab] = useState(() => localStorage.getItem('wh_tab') || 'all');
+  const [tab, setTab] = useState(() => localStorage.getItem('wh_tab') || 'flow');
   const [tweaks, setTweaks] = useState(() => {
     try { return JSON.parse(localStorage.getItem('wh_tweaks')) || {}; }
     catch { return {}; }
   });
   const [open, setOpen] = useState(false);
 
-  const [boxes, setBoxes] = useState(initialBoxes);
+  const [boxes, _setBoxes] = useState([]);
   const [activeBoxId, setActiveBoxId] = useState(null);
   const [packer, setPacker] = useState(null);
-  const [catalog, setCatalog] = useState(sampleLine);
-  const [itemsByBox, setItemsByBox] = useState({});
+  const [catalog, setCatalog] = useState([]);
+  const [itemsByBox, _setItemsByBox] = useState({});
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem('wh_history')) || []; }
     catch { return []; }
   });
   const [toasts, setToasts] = useState([]);
   const toastTimers = useRef([]);
-  const [receiveBoxIds, setReceiveBoxIds] = useState([]);
+  const [receiveBoxIds, _setReceiveBoxIds] = useState([]);
+  const [scanProgress, setScanProgress] = useState({});
+
+  const boxesRef = useRef([]);
+  const itemsByBoxRef = useRef({});
+  const receiveBoxIdsRef = useRef([]);
 
   const merged = { ...DEFAULT_TWEAKS, ...tweaks };
 
@@ -72,6 +73,96 @@ export default function App() {
   useEffect(() => {
     return () => toastTimers.current.forEach(clearTimeout);
   }, []);
+
+  // Firestore connectivity test
+  useEffect(() => {
+    setDoc(doc(db, 'config', 'test'), { ts: Date.now() })
+      .then(() => console.log('✅ Firestore connected'))
+      .catch(err => console.error('❌ Firestore failed:', err.code, err.message));
+  }, []);
+
+  // Firestore real-time listeners
+  useEffect(() => {
+    const onErr = (label) => (err) => {
+      console.error(`Firestore [${label}]:`, err.code, err.message);
+    };
+    const unsubBoxes = onSnapshot(collection(db, 'boxes'), snap => {
+      const data = snap.docs.map(d => d.data())
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      boxesRef.current = data;
+      _setBoxes(data);
+    }, onErr('boxes'));
+    const unsubItems = onSnapshot(collection(db, 'boxItems'), snap => {
+      const data = {};
+      snap.docs.forEach(d => { data[d.id] = d.data().items || []; });
+      itemsByBoxRef.current = data;
+      _setItemsByBox(data);
+    }, onErr('boxItems'));
+    const unsubReceive = onSnapshot(doc(db, 'config', 'receive'), snap => {
+      const ids = snap.exists() ? (snap.data().ids || []) : [];
+      receiveBoxIdsRef.current = ids;
+      _setReceiveBoxIds(ids);
+    }, onErr('receive'));
+    const unsubCatalog = onSnapshot(doc(db, 'config', 'catalog'), snap => {
+      if (snap.exists()) setCatalog(snap.data().items || []);
+    }, onErr('catalog'));
+    const unsubCatalogByPacker = onSnapshot(doc(db, 'config', 'catalogByPacker'), snap => {
+      if (snap.exists()) setCatalogByPacker(snap.data().assignments || {});
+    }, onErr('catalogByPacker'));
+    const unsubBarcodeMap = onSnapshot(doc(db, 'config', 'barcodeMap'), snap => {
+      if (snap.exists()) {
+        const entries = snap.data().entries || [];
+        const map = Object.fromEntries(entries.map(e => [e.key, e.barcodes]));
+        setBarcodeMap(map);
+      }
+    }, onErr('barcodeMap'));
+    const unsubProgress = onSnapshot(collection(db, 'progress'), snap => {
+      const data = {};
+      snap.docs.forEach(d => { data[d.id] = d.data().items || []; });
+      setScanProgress(data);
+    }, onErr('progress'));
+    return () => { unsubBoxes(); unsubItems(); unsubReceive(); unsubCatalog(); unsubBarcodeMap(); unsubCatalogByPacker(); unsubProgress(); };
+  }, []);
+
+  function setBoxes(updater) {
+    const prev = boxesRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    boxesRef.current = next;
+    _setBoxes(next);
+    const batch = writeBatch(db);
+    next.forEach(box => batch.set(doc(db, 'boxes', box.id), box));
+    prev.filter(b => !next.find(n => n.id === b.id))
+        .forEach(b => batch.delete(doc(db, 'boxes', b.id)));
+    batch.commit();
+  }
+
+  function setItemsByBox(updater) {
+    const prev = itemsByBoxRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    itemsByBoxRef.current = next;
+    _setItemsByBox(next);
+    Object.entries(next).forEach(([boxId, items]) => {
+      if (prev[boxId] !== items) setDoc(doc(db, 'boxItems', boxId), { items });
+    });
+  }
+
+  function handleScanProgress(boxId, items) {
+    if (!boxId) return;
+    if (items.length === 0) {
+      deleteDoc(doc(db, 'progress', boxId));
+    } else {
+      const progress = items.filter(it => it.got > 0).map(it => ({ sku: it.sku, got: it.got }));
+      if (progress.length > 0) setDoc(doc(db, 'progress', boxId), { items: progress });
+    }
+  }
+
+  function setReceiveBoxIds(updater) {
+    const prev = receiveBoxIdsRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    receiveBoxIdsRef.current = next;
+    _setReceiveBoxIds(next);
+    setDoc(doc(db, 'config', 'receive'), { ids: next });
+  }
 
   const showToast = useCallback((message) => {
     const id = Date.now();
@@ -98,23 +189,9 @@ export default function App() {
   function createNewBox() {
     const now = new Date();
     const time = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-    let newBox;
-    setBoxes(prev => {
-      const newId = generateBoxId(prev);
-      newBox = { id: newId, pos: '—', status: 'open', packer: packer || null, skuCount: 0, totalQty: 0, updated: time };
-      return [newBox, ...prev];
-    });
-    // use a ref trick — read id after state settles via effect or just derive it
-    const now2 = new Date();
-    const mm = String(now2.getMonth() + 1).padStart(2, '0');
-    const dd = String(now2.getDate()).padStart(2, '0');
-    const todayPrefix = `BX-${mm}${dd}-`;
-    const serials = boxes
-      .filter(b => b.id.startsWith(todayPrefix))
-      .map(b => parseInt(b.id.slice(-4), 10))
-      .filter(n => !isNaN(n));
-    const next = serials.length > 0 ? Math.max(...serials) + 1 : 1;
-    const newId = `${todayPrefix}${String(next).padStart(4, '0')}`;
+    const newId = generateBoxId(boxesRef.current);
+    const newBox = { id: newId, pos: '—', status: 'open', packer: packer || null, skuCount: 0, totalQty: 0, updated: time, createdAt: Date.now() };
+    setBoxes(prev => [newBox, ...prev]);
     setActiveBoxId(newId);
     return newId;
   }
@@ -129,8 +206,14 @@ export default function App() {
     const cutoff = new Date(now);
     cutoff.setDate(cutoff.getDate() - 30);
     setHistory(prev => [entry, ...prev.filter(h => new Date(h.clearedAt) > cutoff)]);
-    setBoxes([]);
-    setItemsByBox({});
+    const batch = writeBatch(db);
+    boxesRef.current.forEach(b => batch.delete(doc(db, 'boxes', b.id)));
+    Object.keys(itemsByBoxRef.current).forEach(id => batch.delete(doc(db, 'boxItems', id)));
+    batch.commit();
+    boxesRef.current = [];
+    itemsByBoxRef.current = {};
+    _setBoxes([]);
+    _setItemsByBox({});
     showToast('ล้างข้อมูลแล้ว · เก็บประวัติไว้ 1 เดือน');
   }
 
@@ -154,7 +237,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  const showAll = tab === 'all';
+  const showAll = false;
 
   const PACKERS = [
     { code: 'EMP-01', name: 'มุก' },
@@ -162,6 +245,53 @@ export default function App() {
     { code: 'EMP-03', name: 'เต้' },
     { code: 'EMP-04', name: 'ตั๋ง' },
   ];
+
+  const [catalogByPacker, setCatalogByPacker] = useState({});
+  const [barcodeMap, setBarcodeMap] = useState({});
+
+  function applyBarcodeMap(items, map) {
+    const skusInMap = new Set(Object.keys(map).map(k => k.split('__')[0]));
+    return items.map(item => {
+      const key = `${item.sku}__${item.unit}`;
+      const barcodes = map[key];
+      if (barcodes && barcodes.length > 0) return { ...item, barcode: barcodes.join(',') };
+      if (skusInMap.has(item.sku)) return { ...item, barcode: '' }; // SKU มีใน map แต่ unit ไม่ตรง → clear
+      return item; // SKU ไม่มีใน map เลย → ใช้ barcode เดิมจาก ColC
+    });
+  }
+
+  function handleBarcodeMapImport(map) {
+    setBarcodeMap(map);
+    const mapEntries = Object.entries(map).map(([key, barcodes]) => ({ key, barcodes }));
+    setDoc(doc(db, 'config', 'barcodeMap'), { entries: mapEntries })
+      .catch(err => console.error('barcodeMap write failed:', err.code));
+    const matched = catalog.filter(item => map[`${item.sku}__${item.unit}`]).length;
+    const updated = applyBarcodeMap(catalog, map);
+    setCatalog(updated);
+    setDoc(doc(db, 'config', 'catalog'), { items: updated });
+    setCatalogByPacker(prev => {
+      const result = {};
+      for (const code of Object.keys(prev)) {
+        result[code] = applyBarcodeMap(prev[code], map);
+      }
+      setDoc(doc(db, 'config', 'catalogByPacker'), { assignments: result });
+      return result;
+    });
+    showToast(`Barcode map: ${matched} รายการ matched ✓`);
+  }
+
+  function distributeCatalog(items) {
+    const shuffled = [...items].sort(() => Math.random() - 0.5);
+    const result = Object.fromEntries(PACKERS.map(p => [p.code, []]));
+    shuffled.forEach((item, i) => {
+      result[PACKERS[i % PACKERS.length].code].push(item);
+    });
+    for (const code of Object.keys(result)) {
+      result[code].sort((a, b) => items.indexOf(a) - items.indexOf(b));
+    }
+    setCatalogByPacker(result);
+    setDoc(doc(db, 'config', 'catalogByPacker'), { assignments: result });
+  }
 
   const screenProps = { boxes, setBoxes, activeBoxId, setActiveBoxId, catalog, itemsByBox, setItemsByBox, history, clearBoxes, packer, setTab, showToast, createNewBox, generateCSV, triggerDownload, receiveBoxIds, setReceiveBoxIds };
 
@@ -183,10 +313,16 @@ export default function App() {
         {(showAll || tab === 'flow') && (
           <>
             <div className="screen-label">
-              <span className="num">00</span> Flow สรุปการใช้งาน
-              <span className="desc">— ภาพรวมขั้นตอนตั้งแต่เปิดลัง ถึงส่งเข้า POS</span>
+              <span className="num">00</span> Dashboard แพ็คกิ้ง
+              <span className="desc">— ติดตามความคืบหน้าพนักงานแพ็คกิ้งแต่ละคน</span>
             </div>
-            <FlowDiagram />
+            <PackerDashboard
+              catalogByPacker={catalogByPacker}
+              boxes={boxes}
+              itemsByBox={itemsByBox}
+              PACKERS={PACKERS}
+              scanProgress={scanProgress}
+            />
           </>
         )}
 
@@ -198,8 +334,19 @@ export default function App() {
               <span className="num">01</span> Box List
               <span className="desc">— หน้าแรก: เห็นภาพรวมลังทั้งหมดของวัน</span>
             </div>
-            <div style={{ marginBottom: 12 }}>
-              <ImportCatalog catalog={catalog} onImport={(items) => { setCatalog(items); showToast(`นำเข้าแล้ว ${items.length} รายการ ✓`); }} />
+            <div className="row" style={{ marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
+              <ImportCatalog catalog={catalog} onImport={(items) => {
+                const updated = Object.keys(barcodeMap).length > 0 ? applyBarcodeMap(items, barcodeMap) : items;
+                setCatalog(updated);
+                setDoc(doc(db, 'config', 'catalog'), { items: updated })
+                  .then(() => console.log('Firestore catalog saved', updated.length, 'items'))
+                  .catch(err => { console.error('Firestore catalog write failed:', err.code, err.message); showToast('⚠ Firestore error: ' + err.code); });
+                showToast(`นำเข้าแล้ว ${items.length} รายการ ✓`);
+              }} />
+              <ImportBarcodeMap
+                matchCount={Object.keys(barcodeMap).length}
+                onImport={handleBarcodeMapImport}
+              />
             </div>
             <BoxList {...screenProps} />
           </>
@@ -209,7 +356,6 @@ export default function App() {
           <>
             <div className="screen-label" style={{ marginTop: 40 }}>
               <span className="num">02</span>พนักงานแพ็คกิ้ง
-              <span className="scribble">3 variants</span>
               <span className="desc">— หน้าหลักที่คนคลังใช้เยอะที่สุด</span>
             </div>
 
@@ -248,39 +394,21 @@ export default function App() {
               {packer && (
                 <span style={{ fontFamily: 'Patrick Hand', fontSize: 14, color: 'var(--mute)' }}>
                   · กำลังแพ็คโดย <b>{packer.name}</b>
+                  {catalogByPacker[packer.code] && (
+                    <span style={{ marginLeft: 6 }}>({catalogByPacker[packer.code].length} SKU)</span>
+                  )}
                 </span>
               )}
+              <button
+                className="btn sm ghost"
+                onClick={() => { distributeCatalog(catalog); showToast('สุ่มรายการใหม่แล้ว ✓'); }}
+                title="สุ่มแบ่งรายการเบิกใหม่"
+              >
+                🔀 สุ่มใหม่
+              </button>
             </div>
 
-            {(showAll || merged.variant === 'A') && (
-              <>
-                <div className="variant-label">รายการเบิกสินค้า</div>
-                <div style={{ fontFamily: 'Patrick Hand', color: 'var(--mute)', marginBottom: 8 }}>
-                  ตารางเต็ม ด้าน summary · เหมาะกับจอใหญ่ / desktop · เห็นทุกอย่างพร้อมกัน
-                </div>
-                <PackScanA {...screenProps} />
-              </>
-            )}
-
-            {(showAll || merged.variant === 'B') && (
-              <>
-                <div className="variant-label" style={{ marginTop: 40 }}>VARIANT B · Focus scan</div>
-                <div style={{ fontFamily: 'Patrick Hand', color: 'var(--mute)', marginBottom: 8 }}>
-                  โซนยิงใหญ่ · feedback สินค้าชิ้นล่าสุดเด่น · เหมาะกับ tablet / คนที่ยิงเร็ว
-                </div>
-                <PackScanB {...screenProps} />
-              </>
-            )}
-
-            {(showAll || merged.variant === 'C') && (
-              <>
-                <div className="variant-label" style={{ marginTop: 40 }}>VARIANT C · Packing checklist</div>
-                <div style={{ fontFamily: 'Patrick Hand', color: 'var(--mute)', marginBottom: 8 }}>
-                  มี packing list ล่วงหน้า · ยิงเพื่อติ๊ก · ช่วยลด error เวลาตามออเดอร์
-                </div>
-                <PackScanC {...screenProps} />
-              </>
-            )}
+            <PackScanC key={`${packer?.code}-${Object.keys(catalogByPacker).length}`} {...screenProps} catalog={packer && catalogByPacker[packer.code] ? catalogByPacker[packer.code] : catalog} onScanProgress={handleScanProgress} />
           </>
         )}
 
@@ -304,17 +432,7 @@ export default function App() {
           </>
         )}
 
-        {(showAll || tab === 'export') && (
-          <>
-            <div className="screen-label" style={{ marginTop: 40 }}>
-              <span className="num">05</span> Export → POS
-              <span className="desc">— ส่ง batch เข้าระบบ POS ปลายทาง (รูปแบบเลขยัง TBD)</span>
-            </div>
-            <ExportPOS {...screenProps} />
-          </>
-        )}
-
-        {(showAll || tab === 'receive') && (
+{(showAll || tab === 'receive') && (
           <>
             <div className="screen-label" style={{ marginTop: 40 }}>
               <span className="num">06</span> รับสินค้าเข้าสาขา

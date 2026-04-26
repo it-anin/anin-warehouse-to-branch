@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import Annotation from '../components/Annotation.jsx';
-import { generatePOS } from '../data.js';
+import { generatePOS, matchBarcode } from '../data.js';
 
 export default function PackScanB({ boxes, setBoxes, activeBoxId, setTab, showToast, createNewBox, setItemsByBox, catalog, packer }) {
   const [items, setItems] = useState([]);
@@ -16,7 +16,9 @@ export default function PackScanB({ boxes, setBoxes, activeBoxId, setTab, showTo
     if (!val) return;
     e.target.value = '';
 
-    const match = catalog.find(l => l.barcode === val || l.sku === val);
+    if (!activeBoxId) { createNewBox(); showToast('เปิดลังใหม่อัตโนมัติ'); }
+
+    const match = catalog.find(l => matchBarcode(l, val));
     if (!match) { showToast('ไม่พบสินค้าในรายการเบิก'); return; }
 
     setLastScanned(match);
