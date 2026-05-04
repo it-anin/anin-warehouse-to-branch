@@ -224,6 +224,7 @@ open → packing → closed → exported → received
 - Global search ข้ามทุก closed box โดยไม่ต้องเลือกลังก่อน
 - สติกเกอร์ขนาด 90×65mm — barcode ใช้ Box ID
 - รายชื่อสินค้ามีตาราง: SKU / ชื่อสินค้า / หน่วย / จำนวน / Location
+- ปุ่ม "⇩ ส่งออก Barcode" → export `.txt` แบบ TSV ไม่มี header: `barcode\tจำนวนสินค้า\tทุนสินค้า` (ทุนสินค้า = 0 เพราะระบบยังไม่มีข้อมูลต้นทุน)
 
 ---
 
