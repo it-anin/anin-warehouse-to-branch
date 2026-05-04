@@ -31,10 +31,7 @@ export default function BoxClosedLabel({ boxes, setBoxes, activeBoxId, setActive
 
   function handleExportBarcode() {
     if (!activeBox) return;
-    const lines = [
-      'Barcode\tจำนวนสินค้า\tทุนสินค้า',
-      ...boxItems.map(l => `${l.barcode || ''}\t${l.qty ?? l.got ?? 0}\t0`),
-    ];
+    const lines = boxItems.map(l => `${l.barcode || ''}\t${l.qty ?? l.got ?? 0}\t0`);
     triggerDownload(lines.join('\n'), `${activeBox.id}.txt`, 'text/plain');
     showToast('ส่งออกไฟล์ Barcode แล้ว ✓');
   }
