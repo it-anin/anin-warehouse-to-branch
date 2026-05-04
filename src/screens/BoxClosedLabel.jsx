@@ -29,21 +29,14 @@ export default function BoxClosedLabel({ boxes, setBoxes, activeBoxId, setActive
     : [];
   const isSearching = globalSearch.trim().length > 0;
 
-  function handleExportText() {
+  function handleExportBarcode() {
     if (!activeBox) return;
     const lines = [
-      `Box ID: ${activeBox.id}`,
-      `Status: ${activeBox.status}`,
-      `Packer: ${activeBox.packer?.name || '-'}`,
-      `SKU Count: ${activeBox.skuCount ?? 0}`,
-      `Total Qty: ${activeBox.totalQty ?? 0}`,
-      `Date: ${new Date().toLocaleDateString('th-TH')}`,
-      '',
-      'รายชื่อสินค้า:',
-      ...boxItems.map((l, i) => `  ${i + 1}. ${l.name} (${l.sku}) x${l.qty ?? l.got ?? 0} ${l.unit}`),
+      'Barcode\tจำนวนสินค้า\tทุนสินค้า',
+      ...boxItems.map(l => `${l.barcode || ''}\t${l.qty ?? l.got ?? 0}\t0`),
     ];
     triggerDownload(lines.join('\n'), `${activeBox.id}.txt`, 'text/plain');
-    showToast('ส่งออกไฟล์ Text แล้ว ✓');
+    showToast('ส่งออกไฟล์ Barcode แล้ว ✓');
   }
 
   function handleSendPOS() {
@@ -215,7 +208,7 @@ export default function BoxClosedLabel({ boxes, setBoxes, activeBoxId, setActive
             <div className="row" style={{ marginTop: 14, gap: 10 }}>
               <button className="btn primary" onClick={() => window.print()}>🖨 พิมพ์สติกเกอร์</button>
               <button className="btn" onClick={() => window.print()}>⇩ PDF</button>
-              <button className="btn" onClick={handleExportText}>⇩ ส่งออกเป็นไฟล์ Text</button>
+              <button className="btn" onClick={handleExportBarcode}>⇩ ส่งออก Barcode</button>
             </div>
 
             <div style={{ marginTop: 18 }}>
